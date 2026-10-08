@@ -178,7 +178,8 @@ To prevent multiple scratchpad apps from toggling together ("all-in-one bundle")
 2. **Define Window Rules (`~/.config/hypr/windowrules.lua`)**:
    ```lua
    o.window("^antigravity$", { workspace = "special:antigravity silent", float = true, center = true, size = { 1400, 900 } })
-   o.window("^(chrome-gemini.*|google-ai)$", { workspace = "special:gemini silent", float = true, center = true, size = { 1200, 850 } })
+   -- Google AI 兼容 Chrome、Brave、Chromium、Edge 等多浏览器启动的 WebApp class (如 brave-gemini.google.com__-Default)
+   o.window("^((chrome|brave|chromium|msedge)-gemini.*|google-ai.*)$", { workspace = "special:gemini silent", float = true, center = true, size = { 1200, 850 } })
    o.window("^foot-scratchpad$", { workspace = "special:foot silent", float = true, center = true, size = { 1100, 700 } })
    ```
 3. **Bind Dedicated Shortcuts (`~/.config/hypr/bindings.lua`)**:
@@ -187,11 +188,12 @@ To prevent multiple scratchpad apps from toggling together ("all-in-one bundle")
    o.bind("SUPER + A", "Toggle Antigravity", "omarchy-toggle-scratchpad '^antigravity$' antigravity 'uwsm-app -- antigravity'")
 
    hl.unbind("SUPER + X")
-   o.bind("SUPER + X", "Toggle Google AI", "omarchy-toggle-scratchpad '^(chrome-gemini.*|google-ai.*)$' gemini 'omarchy-launch-webapp https://gemini.google.com'")
+   o.bind("SUPER + X", "Toggle Google AI", "omarchy-toggle-scratchpad '^((chrome|brave|chromium|msedge)-gemini.*|google-ai.*)$' gemini 'omarchy-launch-webapp https://gemini.google.com'")
 
    o.bind("SUPER + Z", "Toggle Foot Terminal", "omarchy-toggle-scratchpad foot-scratchpad foot 'uwsm-app -- foot --app-id=foot-scratchpad'")
    ```
 4. **Preserve Defaults**: Leave default `SUPER + ALT + S` (Move to scratchpad) and `SUPER + S` (Toggle scratchpad) untouched to retain the universal scratchpad for arbitrary temporary windows.
+   > **Note on WebApp Scratchpad**: `omarchy-launch-webapp` runs using the system default browser. When using Brave or Chromium, the window class prefixes with `brave-` or `chromium-` instead of `chrome-`. Always use `^((chrome|brave|chromium|msedge)-gemini.*|google-ai.*)$` to ensure floating rules match and scratchpad detection prevents duplicate tiling instances.
 
 ---
 
