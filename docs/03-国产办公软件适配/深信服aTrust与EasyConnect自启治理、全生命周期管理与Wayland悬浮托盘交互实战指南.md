@@ -279,7 +279,8 @@ ps aux | grep -E "aTrust|sangfor|EasyConnect" | grep -v grep
 
 #### 痛点 1：Linux 版官方凭据持久化机制缺陷
 - **底层存储事实**：EasyConnect 实际上具备本地持久化机制，其凭据文件位于 `/usr/share/sangfor/EasyConnect/resources/conf/setting_<username>.json`。
-- **加密算法**：密码字段采用 **RC4 加密**（密钥固定为 `sangfor_cn`，Salt 固定为 `__user_psw_salt_for_local_conf__`），密文以 Hex 编码保存。
+- **加密算法**：密码字段采用 **RC4 加密**（密钥固定为 `sangfor_cn`，Salt 固定为 `__user_psw_salt_for_local_conf__`），密文以 Hex 编码保存。加密内容必须严格为 `PSW_SALT + password`。
+- **持久化防丢关键**：配置结构中的 `loginInfo` 对象不仅需要保存 `userName` 与 `password` 密文，**必须显式包含 `"savePwd": 1` 与 `"autoLogin": 1`**。若缺少这两项，客户端退出时会反向刷写文件并将密码置空，导致二次启动时凭据丢失、密码框呈现空白。
 - **前端缺陷**：官方前端脚本在 Linux 平台下虽然会反解并填入 `username`，但在表单初始化中刻意屏蔽或丢失了向 Password 输入框自动回填的逻辑，必须由预加载注入脚本（Preload Script）接管。
 
 #### 痛点 2：`Local environment contains error.` 的真实成因
@@ -292,16 +293,18 @@ ps aux | grep -E "aTrust|sangfor|EasyConnect" | grep -v grep
 - **Promise 链死锁**：在特定网关策略或 Linux 客户端路由下，`l.config.needGoDefault` 为 false 时既未执行 `onRcReadyShow()`，又未执行 Promise 的 `resolve()`，导致加载遮罩永远挂起；同时资源列表 DOM 被加上了 `hide:!rsInit` 样式，形成视觉卡死；
 - **11 秒主进程强弹**：主进程定时器在 11 秒超时后强行执行 `ecShow, id: 0`，把未完成的白框与转圈盖在屏幕中央。
 
-### 8.2 对抗性设计：两阶段状态机与状态熔断保护
+### 8.2 对抗性设计：V7.1 双向状态机与状态熔断保护
 
 为了杜绝自动化脚本与前端 SPA 框架竞争产生的副作用，在 `preload.js` 中构建了三层严密防线：
 
-1. **SPA 动态路由感知与时序防御**：
+1. **SPA 动态路由感知与原生 AutoLogin 兼容**：
    - 窗口初始载入 URL 为 `/portal`，随后通过 Hash 跳转至 `#!/login`。
+   - 若客户端原生 `autoLogin` 机制已成功触发（`vm.loading === true`），Preload 立即主动规避退出，绝不抢发并发请求造成冲突；
    - 摒弃静态 URL 判定，改为在 VPN 会话生命周期内动态监听真实 DOM 元素（`input[type=password]` 与 `vmodels.password`）的挂载状态。
-2. **两阶段确定性状态机**：
-   - **阶段一（填充）**：向 input 与 avalon 模型同时赋值目标密码，并强制派发 `input` 与 `change` 事件；
-   - **阶段二（防抖提交）**：等待两个检测周期（约 400ms），确认双向绑定模型完全收敛后再触发 `vm.login()`，避免空密码提交；
+2. **两阶段确定性状态机 (Preload V7.1)**：
+   - **排查隐藏占位符**：严格等待 Avalon 真实视图模型与表单元素加载，避免操作用于防自动填充的 `<div class="hidden-box">` 假节点；
+   - **阶段一（填充）**：向真实 input 与 avalon 模型同时赋值目标凭据，并强制派发 `input` 与 `change` 事件；
+   - **阶段二（防抖提交）**：等待两个检测周期（约 400ms），确认双向绑定模型完全收敛后再触发 `vm.login()` 或回车提交，彻底杜绝空密码提前发送；
    - **防御销毁**：一旦检测到页面脱离登录页（路由变为 `service` 或 `logout`），立即彻底销毁登录定时器，绝不串扰后续会话。
 3. **资源页 Loading 状态熔断保护**：
    - 当检测到进入 `/service` 资源路由时，主动将 `common_loading.toggle` 设为 `false`，并广播 `all!onHideLoading`；
@@ -313,7 +316,7 @@ ps aux | grep -E "aTrust|sangfor|EasyConnect" | grep -v grep
 本项目在 `templates/sangfor/` 中提供了工业级补丁工具 `patch-easyconnect.sh`，可全自动完成解包、补丁注入、重新打包、RC4 凭据生成与开机权限守护：
 
 ```bash
-# 运行一键补丁部署（支持指定网关、账号与密码）
+# 运行一键补丁部署（支持指定网关、账号与密码，样例已脱敏）
 sudo VPN_HOST="vpn.example.com:4430" VPN_USER="your_username" VPN_PASS="your_password" /usr/local/bin/patch-easyconnect
 ```
 
@@ -323,5 +326,6 @@ d /usr/share/sangfor/EasyConnect/resources/conf 0777 root root -
 d /usr/share/sangfor/EasyConnect/resources/logs 0777 root root -
 z /usr/share/sangfor/EasyConnect/resources/conf/setting_*.json 0666 root root -
 ```
-在系统重启时由 `systemd-tmpfiles` 强制保障目录与凭据读写权限，真正做到**开机即用、一键直达**。
+在系统重启时由 `systemd-tmpfiles` 强制保障目录与凭据读写权限，真正做到**开机即用、二次冷启零手工介入**。
+
 
