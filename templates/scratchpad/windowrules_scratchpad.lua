@@ -10,8 +10,8 @@ o.window("^antigravity$", {
   size = { 1400, 900 },
 })
 
--- 2. Google AI (Gemini 独立 WebApp): 自动静默送入 special:gemini
-o.window("^(chrome-gemini.*|google-ai)$", {
+-- 2. Google AI (Gemini 独立 WebApp): 自动静默送入 special:gemini，大尺寸浮动居中
+o.window("^((chrome|brave|chromium|msedge)-gemini.*|google-ai.*)$", {
   workspace = "special:gemini silent",
   float = true,
   center = true,

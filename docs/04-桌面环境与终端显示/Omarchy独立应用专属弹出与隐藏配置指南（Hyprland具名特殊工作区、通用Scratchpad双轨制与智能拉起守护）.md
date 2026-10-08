@@ -133,8 +133,8 @@ o.window("^antigravity$", {
   size = { 1400, 900 },
 })
 
--- 2. Google AI (Gemini 独立 WebApp): 自动静默送入 special:gemini
-o.window("^(chrome-gemini.*|google-ai)$", {
+-- 2. Google AI (Gemini 独立 WebApp): 自动静默送入 special:gemini，大尺寸浮动居中
+o.window("^((chrome|brave|chromium|msedge)-gemini.*|google-ai.*)$", {
   workspace = "special:gemini silent",
   float = true,
   center = true,
@@ -174,7 +174,7 @@ o.bind("SUPER + A", "Toggle Antigravity", "omarchy-toggle-scratchpad '^antigravi
 
 -- 2. Google AI 独立无边框应用 (Super + X)
 hl.unbind("SUPER + X")
-o.bind("SUPER + X", "Toggle Google AI", "omarchy-toggle-scratchpad '^(chrome-gemini.*|google-ai.*)$' gemini 'omarchy-launch-webapp https://gemini.google.com'")
+o.bind("SUPER + X", "Toggle Google AI", "omarchy-toggle-scratchpad '^((chrome|brave|chromium|msedge)-gemini.*|google-ai.*)$' gemini 'omarchy-launch-webapp https://gemini.google.com'")
 
 -- 3. Foot 专属下拉便签终端 (Super + Z)
 o.bind("SUPER + Z", "Toggle Foot Terminal", "omarchy-toggle-scratchpad foot-scratchpad foot 'uwsm-app -- foot --app-id=foot-scratchpad'")
@@ -209,6 +209,22 @@ o.bind("SUPER + Z", "Toggle Foot Terminal", "omarchy-toggle-scratchpad foot-scra
 > 2. 在绑定快捷键时，传入显式锚定模式 `'^antigravity$'`；
 > 3. 确保 `antigravity-ide` 保持平铺在主常规工作区（如 Workspace 1 / 3），永不被特殊工作区波及。
 
+### 4. 默认浏览器差异与 WebApp Class 命名前缀（Brave / Chrome / Edge 避坑）
+`omarchy-launch-webapp` 默认使用系统当前配置的默认浏览器（通过 `xdg-settings get default-web-browser` 获取）。不同浏览器以 `--app=` 模式启动时，Wayland 下生成的窗口 Class 前缀并不一致：
+* **Google Chrome**: `chrome-gemini.google.com__-Default`
+* **Brave 浏览器**: `brave-gemini.google.com__-Default`
+* **Chromium**: `chromium-gemini.google.com__-Default`
+* **Microsoft Edge**: `msedge-gemini.google.com__-Default`
+
+> [!WARNING]
+> **规则脱靶引发的“平铺退化”与“多实例克隆”**：
+> 如果规则写死为 `chrome-gemini.*`，在 Brave 或 Chromium 环境下：
+> 1. **悬浮失效（平铺退化）**：Hyprland 判定 windowrule 未命中，窗口默认退化为普通平铺（Tiling）窗口，强行分割当前工作区；
+> 2. **探活脱靶（多实例克隆）**：调度器使用正则匹配不到该窗口，误以为程序尚未启动，用户每次按下快捷键都会重新执行拉起命令，导致屏幕上堆叠出多个平铺的 Gemini 窗口。
+>
+> **防护措施**：
+> 在 `windowrules.lua` 与 `bindings.lua` 中必须统一使用泛化前缀匹配模式：
+> `'^((chrome|brave|chromium|msedge)-gemini.*|google-ai.*)$'`，确保无论用户切换何种主流 Chromium 衍生浏览器，均能精准命中浮动规则并单实例守护。
 
 ---
 
