@@ -215,6 +215,7 @@ omarchy-cn/
   * **本地环境报错根治与开机权限守护**：彻底纠正破坏性 mask 导致的 `Local environment contains error`，通过 `systemd-tmpfiles` 实现重启后权限自愈；
   * **Wayland 悬浮托盘（Float Tray）逆向解析**：还原 EasyConnect 右上角 32x32 独立无边框置顶悬浮窗（蓝绿“S”图标）底层代码，提供右键退出与双击呼出核心交互；
   * **大窗口关闭保护实录**：反编译 `app.asar` 验证 EasyConnect 登录后关闭大界面不退网、释放平铺工作区桌面的代码证据；
+  * **EasyConnect、Clash TUN 与 Tailscale MagicDNS 三网共存与 DNS 零冲突治理**：定位深信服 `svpnservice` 暴力改写 `/etc/resolv.conf` 导致 Google 断网与 Qoder IDE 卡死在“正在连接服务/检查 VPN”的底层机理；采用等长二进制重定向热补丁（`/etc/resolv.conf` $\to$ `/tmp/resolv.conf`）实现宿主机零侵入，构建 Pacman 事务钩子与 `sangfor-mgr` 前置多层自愈屏障，保障长期有效；
   * **全自动无感包装器体系**：Sudoers 权限穿透、UUID 唯一调用链（Trace ID）日志可观测性，日常点击菜单秒启，退出时自动强杀所有孤儿进程并安全停用；
   * **全系统自启排查全景**：覆盖 Systemd 系统/用户服务、XDG Desktop 自启（Remmina 清理）、Docker 容器自愈策略（Neo4j/Langfuse）全链路方法论。
 

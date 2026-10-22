@@ -95,3 +95,28 @@ sudo VPN_HOST="vpn.example.com:4430" VPN_USER="your_username" VPN_PASS="your_pas
 
 ### 开机权限防篡改固化：
 通过 `/etc/tmpfiles.d/easyconnect.conf` 在每次系统开机时强制重置目录权限（0777）与凭据权限（0666），彻底解决重启后权限丢失问题。
+
+---
+
+## 6. EasyConnect、Clash TUN 与 Tailscale MagicDNS 三网共存治理
+
+### 冲突根因与物理事实：
+1. **EasyConnect 激进改写 DNS**：EasyConnect 底层服务 `svpnservice` 会硬编码覆写 `/etc/resolv.conf` 为 `nameserver 127.0.0.1`。
+2. **现代 Linux 端口劫持失效**：在现代 Linux（nftables 后端与 systemd-resolved）与 Clash TUN 模式环境下，EasyConnect 使用的 `iptables-legacy` DNAT 转发规则直接执行失败，其内置日志输出 `DNS Module will be disabled`。
+3. **管杀不管埋与全局瘫痪**：DNS 模块失败后，深信服并未还原 `/etc/resolv.conf`，导致发往 `127.0.0.1:53` 的 DNS 查询全部黑洞超时。
+   - **Qoder** 报错 `dial tcp: lookup gateway.qoder.com.cn: Try again`，界面卡死在“正在连接服务/检查 VPN”；
+   - **Google 等外网**在短时间缓存过期后无法解析，发生断网；
+   - **Tailscale MagicDNS**（`100.100.100.100`）被完全冲刷破坏。
+
+### 零侵入解耦方案（二进制重定向热补丁）：
+- **不锁系统文件**：无需对宿主机 `/etc/resolv.conf` 执行 `chattr +i`，保持 systemd-resolved 与 Tailscale MagicDNS 原生动态管理能力。
+- **等长安全替换**：将 `svpnservice` 二进制中硬编码的 `/etc/resolv.conf` 等长替换为 `/tmp/resolv.conf`（16 字节），使深信服自闭环读写临时文件，彻底阻断对宿主机网络栈的污染破坏。
+- **持久化防复发防护**：
+  1. `patch-easyconnect` 补丁工具内置二进制热补丁能力；
+  2. pacman hook（`/etc/pacman.d/hooks/99-easyconnect-autologin.hook`）在 EasyConnect 安装或包升级时自动重新打补丁；
+  3. `sangfor-mgr start-easyconnect` 启动入口内置前置自愈检测，若发现二进制被重置或 resolv.conf 出现死锁残留，毫秒级自动还原。
+- **三网完美共存拓扑**：
+  - **外网/海外流量**：Clash TUN（`Meta` 网卡 + Fake-IP 198.18.0.0/15）负责科学上网；
+  - **私有节点通信**：Tailscale（`tailscale0` + MagicDNS 100.100.100.100）负责 P2P Mesh 组网；
+  - **企业内网流量**：EasyConnect（`tun0` + L3VPN 路由 172.28.x.x）负责内部服务器穿透。
+  - **本地开发生态**：Qoder IDE、终端网络与系统更新 100% 畅通稳定。
