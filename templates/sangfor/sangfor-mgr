@@ -44,7 +44,26 @@ case "$1" in
         systemctl unmask EasyMonitor.service 2>/dev/null || true
         systemctl enable EasyMonitor.service 2>/dev/null || true
         systemctl start EasyMonitor.service 2>/dev/null || true
-        log_info "EasyMonitor 服务已启动并保持开机自启。"
+
+        # 校验并自动固化 svpnservice DNS 防劫持补丁 (防 pacman 升级或系统重置后复发)
+        SVPN_BIN="/usr/share/sangfor/EasyConnect/resources/bin/svpnservice"
+        if [ -f "$SVPN_BIN" ] && strings "$SVPN_BIN" 2>/dev/null | grep -q "/etc/resolv.conf"; then
+            log_warn "检测到 svpnservice 存在 DNS 劫持风险，自动执行热补丁重定向至 /tmp/resolv.conf..."
+            [ ! -f "${SVPN_BIN}.orig" ] && cp -p "$SVPN_BIN" "${SVPN_BIN}.orig"
+            sed -i 's|/etc/resolv\.conf|/tmp/resolv.conf|g' "$SVPN_BIN"
+        fi
+
+        # 检查宿主机 /etc/resolv.conf 是否遗留深信服 127.0.0.1 坏死配置，若有则自愈
+        if [ -f /etc/resolv.conf ] && grep -q ";sangfor-dns-client" /etc/resolv.conf 2>/dev/null; then
+            log_warn "检测到 /etc/resolv.conf 残留 sangfor-dns-client 坏死配置，触发系统 DNS 自动自愈..."
+            if [ -e /run/systemd/resolve/stub-resolv.conf ]; then
+                ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+            elif [ -e /etc/resolv.conf.sangforbak ]; then
+                cp -f /etc/resolv.conf.sangforbak /etc/resolv.conf
+            fi
+        fi
+
+        log_info "EasyMonitor 服务已启动并保持开机自启，DNS 防冲突屏障已激活。"
         ;;
 
     stop-easyconnect)
@@ -52,6 +71,17 @@ case "$1" in
         systemctl stop EasyMonitor.service 2>/dev/null || true
         # 注意：此处切勿执行 systemctl mask，否则会导致下次开机或重启后服务无法自启，前端报 Local environment contains error
         killall -9 EasyConnect EasyMonitor ECAgent CSClient svpnservice 2>/dev/null || true
+
+        # 退出自愈保护：确保退出后宿主机 resolv.conf 无残留
+        if [ -f /etc/resolv.conf ] && grep -q ";sangfor-dns-client" /etc/resolv.conf 2>/dev/null; then
+            log_warn "清理残留的 sangfor-dns-client 配置，恢复原生系统解析器..."
+            if [ -e /run/systemd/resolve/stub-resolv.conf ]; then
+                ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+            elif [ -e /etc/resolv.conf.sangforbak ]; then
+                cp -f /etc/resolv.conf.sangforbak /etc/resolv.conf
+            fi
+        fi
+
         log_info "EasyConnect 及其底层隧道（CSClient/svpnservice/ECAgent）已完全断开并清理。"
         ;;
 

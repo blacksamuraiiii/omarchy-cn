@@ -328,4 +328,90 @@ z /usr/share/sangfor/EasyConnect/resources/conf/setting_*.json 0666 root root -
 ```
 在系统重启时由 `systemd-tmpfiles` 强制保障目录与凭据读写权限，真正做到**开机即用、二次冷启零手工介入**。
 
+---
+
+## 9. EasyConnect、Clash TUN 与 Tailscale MagicDNS 三网共存与 DNS 零冲突实战
+
+在多网络协同的高级工作流中（宿主机同时运行 Clash TUN 科学出海、Tailscale 私有 Mesh 组网与 EasyConnect 企业内网），往往会触发严重的“断网假死”：
+- **典型现象**：
+  1. 重启电脑重新连接后短时间内正常，但运行一段时间后突然**无法正常访问 Google 等外网**；
+  2. Qoder IDE（或依赖云端接口的现代 AI 编程助手）控制台疯狂报错 `dial tcp: lookup gateway.qoder.com.cn: Try again`，界面永久悬停在“正在连接服务...”或弹出“连接失败，请检查网络连接或 VPN”；
+  3. Tailscale MagicDNS 节点域名无法解析。
+
+### 9.1 第一性原理剖析：底层网络栈破坏根因
+
+从不可再分的 Linux 网络栈物理事实出发拆解：
+
+1. **EasyConnect 的激进 DNS 劫持**：
+   - EasyConnect 核心守护服务 `/usr/share/sangfor/EasyConnect/resources/bin/svpnservice`（SUID root 提权）在启动及网络保活巡检时，会强行将 `/etc/resolv.conf` 覆盖为：
+     ```ini
+     ;sangfor-dns-client
+     nameserver 127.0.0.1
+     ```
+2. **现代 Linux 与 Clash TUN 的规则冲突导致劫持断环**：
+   - 在传统的单网卡旧 Linux 下，深信服试图通过执行 `iptables-legacy -t nat -A OUTPUT -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:5373`，把 53 端口流量转发至本地进程。
+   - 但在现代发行版（默认 `iptables-nft` / `nftables`）以及 Clash TUN 开启（策略路由 `ip rule` 接管流量）的环境下，深信服的 `iptables-legacy` 规则**直接调用失败**。
+   - EasyConnect 的运行日志（`DNS.log`）白纸黑字记录了这一致命断环：
+     ```text
+     [HookDnsServer] cmdPopen exec queryCMDBuf: iptables-legacy ... failed, try again[2]
+     [WARNING] Failed to HookDnsServer by iptables...
+     Will: DNS Module will be disabled;
+     ```
+3. **管杀不管埋：系统遗留在 127.0.0.1 假死地址**：
+   - 尽管深信服自身的 DNS 模块已经判定失败并主动禁用（`disabled`），**但它却并未将 `/etc/resolv.conf` 恢复回去**！
+   - 系统中此时没有任何进程在监听 `127.0.0.1:53`（systemd-resolved 监听的是 `127.0.0.53:53`，Tailscale 监听的是 `100.100.100.100:53`）。
+   - 所有直读 `/etc/resolv.conf` 的应用程序（Go 语言的 QoderCN 守护进程、glibc 解析器等）发出的 DNS 请求全部被静默丢弃，5 秒后报超时错误 `lookup ... Try again`。
+   - 浏览器在内置 DNS 缓存到期后亦无法再解析任何公网域名，造成 Google、GitHub 等外网全面瘫痪。
+
+### 9.2 对抗性审查：方案优劣甄别
+
+- **对抗方案 1：给 `/etc/resolv.conf` 执行 `chattr +i` 强制锁死？**
+  - **审查缺陷**：粗暴锁死破坏了 systemd-resolved 与 Tailscale MagicDNS 动态感知网络切换的能力。当 Tailscale 重新分配 IP 或切换网络环境时，DNS 配置无法动态更新。
+- **对抗方案 2：修复深信服的 iptables 规则让 127.0.0.1 真正工作？**
+  - **审查缺陷**：如果让深信服接管全局 DNS，深信服会将所有外网查询发往企业 VPN 网关，直接破坏 Clash 的 Fake-IP 机制与规则分流，不仅内网变慢，而且境外网站将遭受企业网关的阻断或污染，与科学上网完全互斥。
+- **最优解：外科手术级等长二进制重定向（Patch `svpnservice`）**：
+  - **解构逻辑**：EasyConnect 真正使用的是三层 IP 隧道（L3VPN，`tun0` 网卡上的具体内网网段如 `172.28.x.x`），其核心内网访问根本不需要修改系统 DNS。
+  - **实施路径**：将 `svpnservice` 二进制中硬编码的 `/etc/resolv.conf` 等长替换为 `/tmp/resolv.conf`（16 字节对 16 字节，内存结构与偏移量完全一致）。
+  - **终极效果**：深信服自认为改写成功，所有废弃操作在 `/tmp/resolv.conf` 内自闭环；宿主机的系统 DNS 与 Tailscale MagicDNS 保持 100% 原始纯净，彻底消除任何相互冲突！
+
+### 9.3 落地加固与多层防线设计
+
+为了满足“**长期有效、重启后不失效、pacman 升级后不复发**”的高可靠性要求，构建了三层自愈屏障：
+
+#### 第一道防线：`patch-easyconnect` 自动化补丁
+在 `/usr/local/bin/patch-easyconnect`（源码对应 `templates/sangfor/patch-easyconnect.sh`）中固化二进制补丁逻辑：
+```bash
+# 自动检测并注入 svpnservice DNS 防劫持补丁
+SVPN_BIN="/usr/share/sangfor/EasyConnect/resources/bin/svpnservice"
+if [ -f "$SVPN_BIN" ] && strings "$SVPN_BIN" 2>/dev/null | grep -q "/etc/resolv.conf"; then
+    [ ! -f "${SVPN_BIN}.orig" ] && sudo cp -p "$SVPN_BIN" "${SVPN_BIN}.orig"
+    sudo sed -i 's|/etc/resolv\.conf|/tmp/resolv.conf|g' "$SVPN_BIN"
+fi
+```
+
+#### 第二道防线：Pacman 升级事务钩子自动自愈
+通过 `/etc/pacman.d/hooks/99-easyconnect-autologin.hook`：
+当 Arch Linux 执行 `pacman -Syu` 升级 `easyconnect` 导致二进制被上游覆盖时，事务完成后立即自动触发 `patch-easyconnect`，重新打上防劫持补丁。
+
+#### 第三道防线：`sangfor-mgr` 运行时前置阻断与自愈
+在 `/usr/local/bin/sangfor-mgr` 的 `start-easyconnect` 中加入前置自愈检查：
+- 每次启动 EasyConnect 时自动核对二进制，若被重置则毫秒级打补丁；
+- 若检测到宿主机 `/etc/resolv.conf` 仍残留 `;sangfor-dns-client` 坏死配置，自动无损恢复为指向 `systemd-resolved` 软链接。
+
+### 9.4 最终三网协同网络拓扑
+
+经过本方案治理后，系统网络栈分工明确且高度解耦：
+
+```text
+[本地应用流量 (Qoder IDE / 浏览器 / 终端)]
+          │
+          ├──► (内网域名/IP: 172.28.x.x)  ────────► EasyConnect (tun0 虚拟网卡, L3VPN 直通)
+          │
+          ├──► (私有节点域名: *.ts.net)    ────────► Tailscale (tailscale0, MagicDNS 100.100.100.100)
+          │
+          └──► (公网/海外域名与请求)       ────────► Clash Verge (Meta 网卡, Fake-IP 198.18.0.0/15 + 代理)
+```
+三网互不争抢 `/etc/resolv.conf` 控制权，重启电脑或长周期运行零故障断流。
+
+
 

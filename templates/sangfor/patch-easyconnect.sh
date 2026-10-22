@@ -246,6 +246,21 @@ sudo cp -p "$TMP_DIR/app.asar" "${ASAR_FILE}.autologin_working"
 sudo chmod 644 "$ASAR_FILE" "${ASAR_FILE}.autologin_working"
 rm -rf "$TMP_DIR"
 
+# 5.1 修复 svpnservice 二进制 DNS 劫持漏洞 (杜绝破坏宿主机 resolv.conf，保障与 Clash、Tailscale、Qoder 零冲突共存)
+SVPN_BIN="/usr/share/sangfor/EasyConnect/resources/bin/svpnservice"
+if [ -f "$SVPN_BIN" ]; then
+    if strings "$SVPN_BIN" 2>/dev/null | grep -q "/etc/resolv.conf"; then
+        log "检测到 svpnservice 包含硬编码 /etc/resolv.conf，正在注入 DNS 防劫持热补丁..."
+        if [ ! -f "${SVPN_BIN}.orig" ]; then
+            sudo cp -p "$SVPN_BIN" "${SVPN_BIN}.orig"
+        fi
+        sudo sed -i 's|/etc/resolv\.conf|/tmp/resolv.conf|g' "$SVPN_BIN"
+        log "svpnservice 二进制已成功等长重定向至 /tmp/resolv.conf (宿主机与 Tailscale/Clash DNS 彻底解耦)"
+    else
+        log "svpnservice 已完成 DNS 防劫持补丁注入，保持安全状态。"
+    fi
+fi
+
 # 6. 配置持久化 JSON 生成 (优先采用客户端内置 Electron 进行 100% 兼容加密)
 log "正在配置凭据持久化文件 setting_${CURRENT_USER}.json..."
 CONF_DIR="/usr/share/sangfor/EasyConnect/resources/conf"
